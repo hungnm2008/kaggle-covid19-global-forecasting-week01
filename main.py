@@ -6,8 +6,12 @@ import numpy as np
 from sklearn.metrics import mean_squared_log_error
 import reverse_geocode as rg
 from sklearn.model_selection import GridSearchCV
-
+from datetime import datetime,timedelta
 import sklearn
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.pipeline import Pipeline
 from sklearn import datasets
 import seaborn as sns
 from sklearn.feature_selection import RFE
@@ -44,10 +48,11 @@ pd.set_option('display.max_colwidth', None)
 pd.set_option('display.width', 1000)
 pd.set_option('display.max_columns', 500)
 
+
 #----------Read input csv----------#
 train = pd.read_csv('train.csv', header=0)
 test = pd.read_csv('test.csv', header=0)
-submission = pd.read_csv('submission_sample.csv')
+submission = pd.read_csv('test.csv',index_col=False)
 
 #----------Correlation analysis----------#
 correlation = train.corr(method='pearson')
@@ -63,21 +68,19 @@ plt.show()
 train = train.drop(['Id'], axis=1)
 train['ConfirmedCases'] = train['ConfirmedCases'].astype(int)
 train['Fatalities'] = train['Fatalities'].astype(int)
+#copy
+submission = submission.drop(['ForecastId'], axis=1)
+
 
 # Date extraction
-train['Date'] =pd.to_datetime(train['Date'])
-train['year'] = train['Date'].dt.year
-train['month'] = train['Date'].dt.month
-train['date'] = train['Date'].dt.day
+FMT = '%Y-%m-%d'
+date = train['Date']
+train['day'] = date.map(lambda x : (datetime.strptime(x, FMT) - datetime.strptime("2020-01-01", FMT)).days)
 train = train.drop(['Date'], axis=1)
-
-### copy
-# test = test.drop(['ForecastId'], axis=1)
-test['Date'] =pd.to_datetime(test['Date'])
-test['year'] = test['Date'].dt.year
-test['month'] = test['Date'].dt.month
-test['date'] = test['Date'].dt.day
-test = test.drop(['Date'], axis=1)
+#copy
+date = submission['Date']
+submission['day'] = date.map(lambda x : (datetime.strptime(x, FMT) - datetime.strptime("2020-01-01", FMT)).days)
+submission = submission.drop(['Date'], axis=1)
 
 # Get city from lat and long
 coords = train[['Lat', 'Long']].apply(tuple, axis=1).tolist()
@@ -85,93 +88,149 @@ results = rg.search(coords)
 train['city'] = [x['city'] for x in results]
 train = train.drop(['Lat'], axis=1)
 train = train.drop(['Long'], axis=1)
-##copy
-coords = test[['Lat', 'Long']].apply(tuple, axis=1).tolist()
+#copy
+coords = submission[['Lat', 'Long']].apply(tuple, axis=1).tolist()
 results = rg.search(coords)
-test['city'] = [x['city'] for x in results]
-test = test.drop(['Lat'], axis=1)
-test = test.drop(['Long'], axis=1)
-
+submission['city'] = [x['city'] for x in results]
+submission = submission.drop(['Lat'], axis=1)
+submission = submission.drop(['Long'], axis=1)
 
 # Label encoder
 labelencoder = LabelEncoder()
 train['Province/State'] = labelencoder.fit_transform(train['Province/State'].astype(str))
 train['Country/Region'] = labelencoder.fit_transform(train['Country/Region'].astype(str))
 train['city'] = labelencoder.fit_transform(train['city'].astype(str))
-##copy
+# copy
 labelencoder = LabelEncoder()
-test['Province/State'] = labelencoder.fit_transform(test['Province/State'].astype(str))
-test['Country/Region'] = labelencoder.fit_transform(test['Country/Region'].astype(str))
-test['city'] = labelencoder.fit_transform(test['city'].astype(str))
+submission['Province/State'] = labelencoder.fit_transform(submission['Province/State'].astype(str))
+submission['Country/Region'] = labelencoder.fit_transform(submission['Country/Region'].astype(str))
+submission['city'] = labelencoder.fit_transform(submission['city'].astype(str))
 
-X_validation = test.iloc[:,[1,2,3,4,5,6]]
-
-# Train/test split
-X = train.iloc[:,[0,1,4,5,6,7]]
-Y = train.iloc[:,[2,3]]
-X_train, X_test, y_train, y_test = train_test_split (X, Y, test_size = 0.20, random_state=42)
-
-print(X_train)
-print(len(X_train))
-scaler = pre.MinMaxScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled = scaler.fit_transform(X_test)
-
-print(X_test_scaled)
 ## Regressor
-# xgbr = xgb.XGBRegressor()
-# reg = MLPRegressor(solver='lbfgs',alpha=0.001,hidden_layer_sizes=(150,))
-
-
-ESTIMATORS = {
-    # "MultiO/P AdaB": MultiOutputRegressor(AdaBoostRegressor(n_estimators=5))
-    # "MultiO/P GBR" :MultiOutputRegressor(GradientBoostingRegressor(n_estimators=5))
-    # "RandomForestRegressor": RandomForestRegressor(max_depth=4, random_state=2),
-    "Decision Tree Regressor":DecisionTreeRegressor(random_state=42,max_depth=25, max_features=5,
-                                                    min_samples_leaf=8,min_samples_split=8)
-    # "GBR" : MultiOutputRegressor(GradientBoostingRegressor(random_state=42,
-    #                                                  learning_rate=0.01,
-    #                                                  n_estimators = 500,
-    #                                                  max_depth=3)),
-}
-
-y_test_predict = dict()
+# y_test_predict = dic
 y_msle = dict()
-#
-for name, estimator in ESTIMATORS.items():
-    estimator.fit(X_train, y_train)                    # fit() with instantiated object
-    y_test_predict[name] = estimator.predict(X_test)   # Make predictions and save it in dict under key: name
-    print(estimator.predict(X_test_scaled))
-    y_msle[name] = np.sqrt(mean_squared_log_error(y_test, estimator.predict(X_test)))
-    print(estimator.predict(X_validation))
-    results = pd.DataFrame(estimator.predict(X_validation))
-    test = pd.concat([test,results], axis=1)
-    test = test.iloc[:,[0,7,8]].astype(int)
-    test.columns=['ForecastId', 'ConfirmedCases','Fatalities']
-    test = test.round()
+predictor= dict()
+print(predictor)
+print(submission)
+i=0
+for country in train['Country/Region'].unique():
+    print('training model for country: '+str(country))
+    country_train = train['Country/Region']==country
+    country_train = train[country_train]
+    province_train = country_train['Province/State']==128
+
+    if province_train.empty:
+        # Train/test split
+        X = country_train.iloc[:, [0, 1, 4, 5]]
+        y = country_train.iloc[:, [2, 3]]
+        X_train, X_test, y_train, y_test = train_test_split (X, y, test_size = 0.25, random_state=42)
+
+        # Scaling
+        scaler = pre.MinMaxScaler(feature_range=(0, 1))
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.fit_transform(X_test)
+
+        # param_grid = {'n_estimators': range(9, 11),
+        #               'max_depth': range(6, 10)
+        #               }
+        #
+        # clf = GridSearchCV(estimator,
+        #                    param_grid,
+        #                    scoring='neg_mean_squared_log_error',
+        #                    cv=5, n_jobs=4, verbose=1)
+        # clf.fit(X_train_scaled, y_train)
+        # print(clf.best_params_)
+
+        estimator = RandomForestRegressor(random_state=42, min_samples_split=5, min_samples_leaf=5, max_features=3,
+                                          max_samples=0.9, max_depth=18, n_estimators=12)
+        estimator.fit(X_train_scaled, y_train)  # fit() with instantiated object
+        print(estimator.predict(X_test_scaled))
+        predictor[country][province] = estimator
+        y_msle[i] = np.sqrt(mean_squared_log_error(y_test, estimator.predict(X_test_scaled)))
+        print(y_msle[i])
+        i += 1
+        strg = str(country)+ str(128)
+        predictor[strg] = estimator
 
 
-print(test)
-test.to_csv('submission.csv',header=True,index=False)
+    else:
+        for province in country_train['Province/State'].unique():
+            print('training model for province: ' + str(country))
+            province_train = country_train['Province/State'] == province
+            province_train = country_train[province_train]
+            # Train/test split
+            X = province_train.iloc[:, [0, 1, 4, 5]]
+            y = province_train.iloc[:, [2, 3]]
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42)
+
+            # Scaling
+            scaler = pre.MinMaxScaler(feature_range=(0, 1))
+            X_train_scaled = scaler.fit_transform(X_train)
+            X_test_scaled = scaler.fit_transform(X_test)
+
+            # param_grid = {'n_estimators': range(9, 20),
+            #               'max_depth': range(6, 20)
+            #               }
+            #
+            # clf = GridSearchCV(estimator,
+            #                    param_grid,
+            #                    scoring='neg_mean_squared_log_error',
+            #                    cv=5, n_jobs=4, verbose=1)
+            # clf.fit(X_train_scaled, y_train)
+            # print(clf.best_params_)
+            estimator = RandomForestRegressor(random_state=42, min_samples_split=5, min_samples_leaf=5, max_features=3,
+                                              max_samples=0.9, max_depth=18, n_estimators=12)
+
+            estimator.fit(X_train_scaled, y_train)  # fit() with instantiated object
+
+            print(estimator.predict(X_test_scaled))
+            y_msle[i] = np.sqrt(mean_squared_log_error(y_test, estimator.predict(X_test_scaled)))
+            print(y_msle[i])
+            i += 1
+            strg = str(country) + str(province)
+            predictor[strg] = estimator
+
+#-------Predicting------#
+
+submission.reset_index(drop=True, inplace=True)
+print(submission)
+result = pd.DataFrame(columns = ['ConfirmedCases', 'Fatalities'])
+for a in submission.itertuples():
+    x = a
+    predictor_id = str(x[2]) + str(x[1])
+    # a = pd.DataFrame(a).iloc[:,[0,1,2,3]]
+    x = np.reshape(x, (1, -1))
+    x = np.delete(x, 1, 1)
+    out = pd.DataFrame(predictor[predictor_id].predict(x))
+    result = pd.concat([result,out], axis=0)
+    print(result)
+
+submission_ = pd.concat([submission,result], axis=1)
+submission_.to_csv('submission.csv',header=True,index=False)
+    # test = test.iloc[:,[0,7,8]].astype(int)
+    # test.columns=['ForecastId', 'ConfirmedCases','Fatalities']
+    # test = test.round()
+
+
 
 #----------Parameters tuning----------#
-param_grid = {'max_depth': range(8,40),
-              'min_samples_split': range(8,10),
-              'min_samples_leaf':range(8,10),
-              'max_features':range(5,6)
-              }
-
-clf = GridSearchCV(DecisionTreeRegressor(),
-                   param_grid,
-                   scoring='neg_mean_squared_log_error',
-                   cv=5, n_jobs=1, verbose=1)
-
-clf.fit(X_train, y_train)
-
-print(clf.best_score_)
-print(clf.best_params_)
-print(clf.error_score)
-print(clf.cv_results_)
+# param_grid = {'max_depth': range(8,40),
+#               'min_samples_split': range(8,10),
+#               'min_samples_leaf':range(8,10),
+#               'max_features':range(5,6)
+#               }
+#
+# clf = GridSearchCV(DecisionTreeRegressor(),
+#                    param_grid,
+#                    scoring='neg_mean_squared_log_error',
+#                    cv=5, n_jobs=1, verbose=1)
+#
+# clf.fit(X_train, y_train)
+#
+# print(clf.best_score_)
+# print(clf.best_params_)
+# print(clf.error_score)
+# print(clf.cv_results_)
 
 
 
